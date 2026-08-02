@@ -1,0 +1,60 @@
+{
+  "numeric_columns": [
+    "Age",
+    "CityTier",
+    "DurationOfPitch",
+    "NumberOfPersonVisiting",
+    "NumberOfFollowups",
+    "PreferredPropertyStar",
+    "NumberOfTrips",
+    "Passport",
+    "PitchSatisfactionScore",
+    "OwnCar",
+    "NumberOfChildrenVisiting",
+    "MonthlyIncome"
+  ],
+  "categorical_columns": [
+    "TypeofContact",
+    "Occupation",
+    "Gender",
+    "ProductPitched",
+    "MaritalStatus",
+    "Designation"
+  ],
+  "categories": {
+    "TypeofContact": [
+      "Company Invited",
+      "Self Enquiry"
+    ],
+    "Occupation": [
+      "Free Lancer",
+      "Large Business",
+      "Salaried",
+      "Small Business"
+    ],
+    "Gender": [
+      "Female",
+      "Male"
+    ],
+    "ProductPitched": [
+      "Basic",
+      "Deluxe",
+      "King",
+      "Standard",
+      "Super Deluxe"
+    ],
+    "MaritalStatus": [
+      "Divorced",
+      "Married",
+      "Single",
+      "Unmarried"
+    ],
+    "Designation": [
+      "AVP",
+      "Executive",
+      "Manager",
+      "Senior Manager",
+      "VP"
+    ]
+  }
+}
