@@ -1,0 +1,62 @@
+name: MLOps Training & Deployment Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  train-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt mlflow
+
+      - name: Validate Dataset and Run Training Pipeline
+        run: |
+          python -c "
+          import pandas as pd, joblib, xgboost as xgb
+          from sklearn.model_selection import train_test_split
+          from sklearn.preprocessing import StandardScaler, OneHotEncoder
+          from sklearn.impute import SimpleImputer
+          from sklearn.compose import make_column_transformer
+          from sklearn.pipeline import make_pipeline
+
+          df = pd.read_csv('data/tourism.csv')
+          if 'CustomerID' in df.columns:
+              df = df.drop(columns=['CustomerID'])
+          X = df.drop(columns=['ProdTaken'])
+          y = df['ProdTaken']
+
+          X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+          num_cols = X_tr.select_dtypes(include=['int64', 'float64']).columns
+          cat_cols = X_tr.select_dtypes(include=['object']).columns
+
+          preprocessor = make_column_transformer(
+              (make_pipeline(SimpleImputer(strategy='median'), StandardScaler()), num_cols),
+              (make_pipeline(SimpleImputer(strategy='most_frequent'), OneHotEncoder(handle_unknown='ignore')), cat_cols)
+          )
+
+          model = make_pipeline(preprocessor, xgb.XGBClassifier(n_estimators=100, max_depth=5, learning_rate=0.1, random_state=42))
+          model.fit(X_tr, y_tr)
+          joblib.dump(model, 'tourism_model.joblib')
+          print('CI Pipeline executed and model re-trained successfully!')
+          "
+
+      - name: Commit and Push Model Updates
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add tourism_model.joblib data/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "auto: update model artifact via CI/CD" && git push)
