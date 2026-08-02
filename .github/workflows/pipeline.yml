@@ -1,144 +1,84 @@
-name: MLOps Training & Deployment Pipeline
+name: MLOps CI/CD Pipeline
 
 on:
   push:
-    branches: ["main"]
-  workflow_dispatch:
+    branches:
+      - main            # Automatically triggers on every push to the main branch
+  workflow_dispatch:    # Lets you click "Run workflow" in the Actions tab
 
 permissions:
-  contents: write
+  contents: write       # Allows the training job to commit the model back to the repo
 
 jobs:
-  data-preparation:
+  # ---------- JOB 1: Register Dataset ----------
+  register-dataset:
+    name: Register Dataset
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Validate and split dataset
-        run: |
-          python - << "PY"
-          import os, pandas as pd
-          from sklearn.model_selection import train_test_split
-
-          df = pd.read_csv("data/tourism.csv")
-          expected = ["CustomerID","ProdTaken","Age","TypeofContact","CityTier","DurationOfPitch",
-                      "Occupation","Gender","NumberOfPersonVisiting","NumberOfFollowups",
-                      "ProductPitched","PreferredPropertyStar","MaritalStatus","NumberOfTrips",
-                      "Passport","PitchSatisfactionScore","OwnCar","NumberOfChildrenVisiting",
-                      "Designation","MonthlyIncome"]
-          missing = [c for c in expected if c not in df.columns]
-          assert not missing, f"Missing columns: {missing}"
-          print(f"Validation passed. Shape: {df.shape}")
-
-          df = df.drop(columns=[c for c in ["Unnamed: 0","CustomerID"] if c in df.columns])
-          df["Gender"] = df["Gender"].replace("Fe Male", "Female")
-
-          X = df.drop(columns=["ProdTaken"])
-          y = df["ProdTaken"]
-          X_train, X_test, y_train, y_test = train_test_split(
-              X, y, test_size=0.2, random_state=42, stratify=y
-          )
-          pd.concat([X_train, y_train], axis=1).to_csv("data/train.csv", index=False)
-          pd.concat([X_test, y_test], axis=1).to_csv("data/test.csv", index=False)
-          print("Saved data/train.csv", X_train.shape, "and data/test.csv", X_test.shape)
-          PY
-
-      - name: Upload train/test artifact
+        run: pip install -r mlops/requirements.txt
+      - name: Register dataset
+        run: python mlops/model_building/data_register.py
+      - name: Upload registered dataset
         uses: actions/upload-artifact@v4
         with:
-          name: data-artifacts
-          path: |
-            data/train.csv
-            data/test.csv
+          name: registered-data
+          path: mlops/data/tourism.csv
 
-  model-training:
+  # ---------- JOB 2: Data Preparation ----------
+  data-preparation:
+    name: Data Preparation
+    needs: register-dataset          # Waits for Job 1 to finish
     runs-on: ubuntu-latest
-    needs: data-preparation
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download train/test artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: data-artifacts
-          path: data/
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install dependencies
+        run: pip install -r mlops/requirements.txt
+      - name: Prepare data
+        run: python mlops/model_building/prep.py
+      - name: Upload train/test splits
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-splits
+          path: |
+            Xtrain.csv
+            Xtest.csv
+            ytrain.csv
+            ytest.csv
+
+  # ---------- JOB 3: Model Training + MLflow Tracking ----------
+  model-training:
+    name: Model Training
+    needs: data-preparation          # Waits for Job 2 to finish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r mlops/requirements.txt
+      - name: Download train/test splits
+        uses: actions/download-artifact@v4
+        with:
+          name: data-splits          # Brings Xtrain/Xtest/ytrain/ytest from Job 2
+      - name: Start MLflow tracking server
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Train, tune and evaluate the model
+          nohup mlflow ui --host 0.0.0.0 --port 5000 &   # Run MLflow UI in the background
+          sleep 5                                         # Give the server a moment to start
+      - name: Train model with MLflow tracking
+        run: python mlops/model_building/train.py
+      - name: Commit trained model
         run: |
-          python - << "PY"
-          import json, joblib, pandas as pd, xgboost as xgb
-          from sklearn.model_selection import GridSearchCV
-          from sklearn.preprocessing import StandardScaler, OneHotEncoder
-          from sklearn.impute import SimpleImputer
-          from sklearn.compose import ColumnTransformer
-          from sklearn.pipeline import Pipeline
-          from sklearn.metrics import accuracy_score, f1_score, classification_report
-
-          train_df = pd.read_csv("data/train.csv")
-          test_df = pd.read_csv("data/test.csv")
-          y_train, X_train = train_df["ProdTaken"], train_df.drop(columns=["ProdTaken"])
-          y_test, X_test = test_df["ProdTaken"], test_df.drop(columns=["ProdTaken"])
-
-          num_cols = list(X_train.select_dtypes(include="number").columns)
-          cat_cols = [c for c in X_train.columns if c not in num_cols]
-
-          preprocessor = ColumnTransformer([
-              ("num", Pipeline([("imputer", SimpleImputer(strategy="median")),
-                                 ("scaler", StandardScaler())]), num_cols),
-              ("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")),
-                                 ("ohe", OneHotEncoder(handle_unknown="ignore"))]), cat_cols)
-          ])
-          pipeline = Pipeline([("preprocessor", preprocessor),
-                                ("model", xgb.XGBClassifier(random_state=42, eval_metric="logloss"))])
-
-          param_grid = {
-              "model__n_estimators": [100, 200],
-              "model__max_depth": [3, 5],
-              "model__learning_rate": [0.1, 0.2]
-          }
-          grid = GridSearchCV(pipeline, param_grid, cv=3, scoring="f1", n_jobs=-1)
-          grid.fit(X_train, y_train)
-
-          best_model = grid.best_estimator_
-          y_pred = best_model.predict(X_test)
-          acc = accuracy_score(y_test, y_pred)
-          f1 = f1_score(y_test, y_pred)
-
-          print("Best params:", grid.best_params_)
-          print(f"Accuracy: {acc:.4f} | F1: {f1:.4f}")
-          print(classification_report(y_test, y_pred))
-
-          joblib.dump(best_model, "tourism_model.joblib")
-          json.dump(grid.best_params_, open("best_params.json", "w"), indent=2, default=str)
-          json.dump({"accuracy": acc, "f1_score": f1}, open("metrics.json", "w"), indent=2)
-          PY
-
-      - name: Commit and push updated model
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add tourism_model.joblib data/train.csv data/test.csv best_params.json metrics.json
-          git diff --cached --quiet || git commit -m "auto: retrain and update model artifacts [skip ci]"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add mlops/deployment/best_tourism_model_v1.joblib
+          git commit -m "Add trained model [skip ci]" || echo "No changes to commit"
           git push
